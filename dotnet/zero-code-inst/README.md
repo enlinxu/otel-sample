@@ -7,6 +7,13 @@ Trace types targeted:
 - server spans (ASP.NET Core)
 - client spans (`HttpClient`)
 - database spans (`Npgsql`/ADO.NET activity capture)
+- messaging spans (`RabbitMQ.Client`)
+
+This sample request path does all of the following inside `inventory-service`:
+
+- PostgreSQL read
+- ClickHouse insert + select
+- RabbitMQ publish + consume
 
 ## What enables traces (the secret)
 
@@ -108,6 +115,36 @@ Tempo API search:
 ```bash
 kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search?tags=service.name=order-service&limit=5'
 ```
+
+Useful follow-up queries:
+
+```bash
+kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search/tag/http.route/values'
+kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search/tag/messaging.system/values'
+kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search/tag/db.system/values'
+```
+
+## What we observed with zero-code
+
+Deployed and verified on a local kind cluster:
+
+- `GET /order/{id:int}` server spans: present
+- `order-service -> inventory-service` HTTP client spans: present
+- PostgreSQL spans: present with `db.system=postgresql`
+- RabbitMQ spans: present with `messaging.system=rabbitmq`
+- ClickHouse traffic: present only as outbound HTTP spans to the ClickHouse service
+
+Important limitation:
+
+- Zero-code did not produce first-class ClickHouse DB spans in this sample.
+- In Tempo, `db.system` values included `postgresql`, but not `clickhouse`.
+- The ClickHouse calls were visible as `System.Net.Http` client spans because this driver talks over HTTP.
+
+Practical takeaway:
+
+- Zero-code is enough for HTTP, PostgreSQL, and RabbitMQ in this sample.
+- Zero-code is not enough if you need ClickHouse to appear as a real database dependency with DB semantics.
+- For ClickHouse, use the code-based sample and add explicit spans around the ClickHouse calls.
 
 ## Notes
 

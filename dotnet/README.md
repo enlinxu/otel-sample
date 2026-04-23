@@ -55,4 +55,31 @@ Cons:
 
 ## In this repo
 
-- `code-based-instr` and `zero-code-inst` implement the same functional app path (`order-service` -> `inventory-service` -> `postgres`) so you can compare outputs directly.
+- `code-based-instr` and `zero-code-inst` implement the same functional app path:
+  `order-service` -> `inventory-service` -> `postgres` + `clickhouse` + `rabbitmq`
+- The business request path is:
+  - inbound HTTP to `order-service`
+  - outbound HTTP from `order-service` to `inventory-service`
+  - PostgreSQL read in `inventory-service`
+  - ClickHouse write + query in `inventory-service`
+  - RabbitMQ publish + consume in `inventory-service`
+
+## Observed zero-code gap
+
+After deploying the zero-code sample on kind and querying Tempo raw traces:
+
+- HTTP server/client spans: present
+- PostgreSQL spans: present as database spans (`db.system=postgresql`)
+- RabbitMQ spans: present as messaging spans (`messaging.system=rabbitmq`)
+- ClickHouse traffic: present only as generic HTTP client spans to the ClickHouse service
+
+What is missing in zero-code:
+
+- No first-class ClickHouse database spans
+- No `db.system=clickhouse` in Tempo
+
+Why this matters:
+
+- From an RCA perspective, RabbitMQ is usable with zero-code in this sample.
+- ClickHouse is only partially visible with zero-code because it looks like outbound HTTP, not database traffic.
+- If you want ClickHouse to appear as a database dependency with DB-specific semantics, use `code-based-instr` and add explicit spans around the ClickHouse calls.

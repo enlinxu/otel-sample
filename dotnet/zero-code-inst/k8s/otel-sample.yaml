@@ -51,6 +51,98 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: rabbitmq
+  namespace: otel-sample-zero
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:4-management
+        ports:
+        - containerPort: 5672
+        - containerPort: 15672
+        readinessProbe:
+          tcpSocket:
+            port: 5672
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: otel-sample-zero
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+  - name: amqp
+    port: 5672
+    targetPort: 5672
+  - name: management
+    port: 15672
+    targetPort: 15672
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: otel-sample-zero
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:25.3
+        env:
+        - name: CLICKHOUSE_USER
+          value: otel
+        - name: CLICKHOUSE_PASSWORD
+          value: otel
+        ports:
+        - containerPort: 8123
+        - containerPort: 9000
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: otel-sample-zero
+spec:
+  selector:
+    app: clickhouse
+  ports:
+  - name: http
+    port: 8123
+    targetPort: 8123
+  - name: native
+    port: 9000
+    targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: inventory-service
   namespace: otel-sample-zero
 spec:
@@ -88,6 +180,18 @@ spec:
         env:
         - name: ConnectionStrings__Postgres
           value: Host=postgres.otel-sample-zero.svc.cluster.local;Port=5432;Database=otel;Username=otel;Password=otel
+        - name: ConnectionStrings__ClickHouse
+          value: Host=clickhouse.otel-sample-zero.svc.cluster.local;Protocol=http;Port=8123;Username=otel;Password=otel
+        - name: RabbitMq__Host
+          value: rabbitmq.otel-sample-zero.svc.cluster.local
+        - name: RabbitMq__Port
+          value: "5672"
+        - name: RabbitMq__Username
+          value: guest
+        - name: RabbitMq__Password
+          value: guest
+        - name: RabbitMq__Queue
+          value: inventory-events
         - name: OTEL_SERVICE_NAME
           value: inventory-service
         - name: OTEL_TRACES_EXPORTER

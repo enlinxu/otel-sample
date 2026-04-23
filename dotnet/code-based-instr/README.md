@@ -6,6 +6,14 @@ Trace types shown:
 - server spans (`order-service`, `inventory-service` via ASP.NET Core)
 - client spans (`order-service` -> `inventory-service` via `HttpClient`)
 - database spans (`inventory-service` -> PostgreSQL via `Npgsql`)
+- database spans for ClickHouse via explicit custom spans
+- messaging spans for RabbitMQ via explicit custom spans
+
+This sample request path does all of the following inside `inventory-service`:
+
+- PostgreSQL read
+- ClickHouse insert + select
+- RabbitMQ publish + consume
 
 ## What enables traces (the secret)
 
@@ -32,6 +40,19 @@ var otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]
 ```
 
 If these lines are missing, you will not get the app-level traces shown in this sample.
+
+For the non-default dependencies in this sample, the important part is:
+
+```csharp
+.AddSource(InventoryTelemetry.Source.Name)
+```
+
+That enables the explicit spans created around:
+
+- ClickHouse insert/select
+- RabbitMQ publish/consume
+
+Without that `ActivitySource`, PostgreSQL still works through `Npgsql`, but ClickHouse and RabbitMQ would not have the same explicit span shape this sample demonstrates.
 
 ## Deploy to kind
 
