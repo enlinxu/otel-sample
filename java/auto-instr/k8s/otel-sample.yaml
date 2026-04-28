@@ -1,0 +1,255 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-java-sample
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-javaagent-config
+  namespace: otel-java-sample
+data:
+  otel.properties: |
+    # OpenTelemetry Java Agent Configuration (v2.26.1)
+    otel.service.name=${OTEL_SERVICE_NAME}
+    otel.traces.exporter=otlp
+    otel.metrics.exporter=otlp
+    otel.logs.exporter=otlp
+    otel.exporter.otlp.endpoint=${OTEL_EXPORTER_OTLP_ENDPOINT:http://opentelemetry-collector.default.svc.cluster.local:4317}
+    otel.exporter.otlp.protocol=grpc
+
+    # Enable instrumentation for common frameworks
+    otel.instrumentation.spring-web.enabled=true
+    otel.instrumentation.http.enabled=true
+    otel.instrumentation.jdbc.enabled=true
+    otel.instrumentation.jpa.enabled=true
+    otel.instrumentation.rabbitmq.enabled=true
+
+    # Propagator settings for service-to-service tracing
+    otel.propagators=tracecontext,baggage,w3c
+    otel.traces.propagator=tracecontext
+
+    # Sampling configuration
+    otel.traces.sampler=parentbased_always_on
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: otel-java-sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: otel
+        - name: POSTGRES_USER
+          value: otel
+        - name: POSTGRES_PASSWORD
+          value: otel
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "pg_isready -U otel -d otel"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: otel-java-sample
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: otel-java-sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:4-management
+        ports:
+        - containerPort: 5672
+        - containerPort: 15672
+        readinessProbe:
+          tcpSocket:
+            port: 5672
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: otel-java-sample
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+  - name: amqp
+    port: 5672
+    targetPort: 5672
+  - name: management
+    port: 15672
+    targetPort: 15672
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: otel-java-sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory-service
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+    spec:
+      containers:
+      - name: inventory-service
+        image: otel-java/inventory-service:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OTEL_SERVICE_NAME
+          value: inventory-service
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://opentelemetry-collector.default.svc.cluster.local:4317
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: grpc
+        - name: OTEL_JAVAAGENT_ENABLED
+          value: "true"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-javaagent:/app/opentelemetry-javaagent.jar"
+        - name: POSTGRES_HOST
+          value: postgres.otel-java-sample.svc.cluster.local
+        - name: POSTGRES_DB
+          value: otel
+        - name: POSTGRES_USER
+          value: otel
+        - name: POSTGRES_PASSWORD
+          value: otel
+        - name: RABBITMQ_HOST
+          value: rabbitmq.otel-java-sample.svc.cluster.local
+        - name: RABBITMQ_USER
+          value: guest
+        - name: RABBITMQ_PASSWORD
+          value: guest
+        - name: RABBITMQ_PORT
+          value: "5672"
+        resources: {}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+  namespace: otel-java-sample
+spec:
+  selector:
+    app: inventory-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: otel-java-sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+      - name: order-service
+        image: otel-java/order-service:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OTEL_SERVICE_NAME
+          value: order-service
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://opentelemetry-collector.default.svc.cluster.local:4317
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: grpc
+        - name: OTEL_JAVAAGENT_ENABLED
+          value: "true"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-javaagent:/app/opentelemetry-javaagent.jar"
+        - name: INVENTORY_SERVICE_URL
+          value: http://haproxy.otel-java-sample.svc.cluster.local:8080
+        resources: {}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: otel-java-sample
+spec:
+  selector:
+    app: order-service
+  ports:
+  - port: 8080
+    targetPort: 8080

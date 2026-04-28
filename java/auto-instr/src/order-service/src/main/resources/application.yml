@@ -1,0 +1,14 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: order-service
+  main:
+    lazy-initialization: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

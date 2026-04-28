@@ -15,6 +15,7 @@ var clickHouseConnectionString = builder.Configuration.GetConnectionString("Clic
 
 builder.Services.AddSingleton(new NpgsqlDataSourceBuilder(postgresConnectionString).Build());
 builder.Services.AddSingleton(new ClickHouseOptions(clickHouseConnectionString));
+builder.Services.AddSingleton<ClickHouseInitializationState>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
 builder.Services.AddSingleton(static serviceProvider =>
 {
@@ -45,10 +46,16 @@ app.MapGet("/inventory/{id:int}", async (
     int id,
     NpgsqlDataSource dataSource,
     ClickHouseOptions clickHouseOptions,
+    ClickHouseInitializationState clickHouseInitializationState,
     ConnectionFactory rabbitMqFactory,
     IOptions<RabbitMqOptions> rabbitMqOptions,
     CancellationToken cancellationToken) =>
 {
+    await EnsureClickHouseInitialized(
+        clickHouseInitializationState,
+        clickHouseOptions.ConnectionString,
+        cancellationToken);
+
     var available = await GetInventoryLevel(dataSource, id, cancellationToken);
     var clickHouseCount = await RecordAndCountClickHouse(clickHouseOptions.ConnectionString, id, available, cancellationToken);
     await PublishInventoryEvent(rabbitMqFactory, rabbitMqOptions.Value, id, available, cancellationToken);
@@ -116,6 +123,34 @@ static async Task InitializeClickHouse(string connectionString)
         ) ENGINE = MergeTree ORDER BY (item_id, ts)
         """;
     await command.ExecuteNonQueryAsync();
+}
+
+static async Task EnsureClickHouseInitialized(
+    ClickHouseInitializationState state,
+    string connectionString,
+    CancellationToken cancellationToken)
+{
+    if (state.Initialized)
+    {
+        return;
+    }
+
+    await state.Lock.WaitAsync(cancellationToken);
+
+    try
+    {
+        if (state.Initialized)
+        {
+            return;
+        }
+
+        await InitializeClickHouse(connectionString);
+        state.Initialized = true;
+    }
+    finally
+    {
+        state.Lock.Release();
+    }
 }
 
 static async Task Retry(
@@ -252,6 +287,12 @@ internal sealed record InventoryEvent(int ItemId, int Available, DateTimeOffset 
 internal sealed class ClickHouseOptions(string connectionString)
 {
     public string ConnectionString { get; } = connectionString;
+}
+
+internal sealed class ClickHouseInitializationState
+{
+    public SemaphoreSlim Lock { get; } = new(1, 1);
+    public bool Initialized { get; set; }
 }
 
 internal sealed class RabbitMqOptions

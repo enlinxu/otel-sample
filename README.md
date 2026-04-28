@@ -7,6 +7,9 @@ Practical OpenTelemetry sample apps to help teams instrument applications and ge
 - [.NET samples](./dotnet/README.md)
   - [Code-based instrumentation](./dotnet/code-based-instr/README.md)
   - [Zero-code auto-instrumentation](./dotnet/zero-code-inst/README.md)
+- [Java samples](./java/README.md)
+  - [Auto-instrumentation with Java Agent](./java/auto-instr/README.md)
+- [Meeting cheat sheet](./MEETING_CHEATSHEET.md)
 
 ## Why this repo
 
@@ -22,3 +25,7 @@ Many teams have production services without tracing. This repository provides co
 1. Go to `dotnet/code-based-instr` or `dotnet/zero-code-inst`.
 2. Follow that folder's README to build, deploy to kind, generate traffic, and verify traces in Tempo.
 
+## Quick start (Java)
+
+1. Go to `java/auto-instr`.
+2. Follow the README to build, deploy to kind, generate traffic, and verify traces in Tempo.

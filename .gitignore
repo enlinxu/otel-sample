@@ -1,0 +1,4 @@
+java/auto-instr/.gradle/
+java/auto-instr/build/
+java/auto-instr/src/inventory-service/build/
+java/auto-instr/src/order-service/build/
