@@ -13,6 +13,7 @@ This sample request path does all of the following inside `inventory-service`:
 
 - PostgreSQL read
 - ClickHouse insert + select
+- Redis write + read
 - RabbitMQ publish + consume
 
 ## What enables traces (the secret)
@@ -22,16 +23,15 @@ Tracing is enabled by Kubernetes runtime injection in `k8s/otel-sample.yaml`.
 
 The required switches are:
 
-1. Init container copies the auto-instrumentation binaries:
+1. Init container copies the auto-instrumentation binaries. The version is swappable with `OTEL_AUTO_VERSION`:
 
 ```yaml
 initContainers:
 - name: copy-auto-instrumentation
   image: alpine:3.20
-  command:
-  - sh
-  - -c
-  - apk add --no-cache curl unzip && curl -sSfLo /tmp/otel-dotnet-auto-install.sh https://github.com/open-telemetry/opentelemetry-dotnet-instrumentation/releases/latest/download/otel-dotnet-auto-install.sh && OTEL_DOTNET_AUTO_HOME=/otel-auto VERSION=v1.13.0 sh /tmp/otel-dotnet-auto-install.sh
+  env:
+  - name: OTEL_AUTO_VERSION
+    value: v1.13.0
 ```
 
 2. Profiler/startup hook env vars attach instrumentation to the .NET process:
@@ -42,9 +42,9 @@ initContainers:
 - name: CORECLR_PROFILER
   value: "{918728DD-259F-4A6A-AC2B-B85E1B658318}"
 - name: CORECLR_PROFILER_PATH
-  value: /otel-auto/linux-arm64/OpenTelemetry.AutoInstrumentation.Native.so
+  value: /otel-auto/auto/linux-arm64/OpenTelemetry.AutoInstrumentation.Native.so
 - name: DOTNET_STARTUP_HOOKS
-  value: /otel-auto/net/OpenTelemetry.AutoInstrumentation.StartupHook.dll
+  value: /otel-auto/auto/net/OpenTelemetry.AutoInstrumentation.StartupHook.dll
 ```
 
 3. Exporter env vars send traces to your collector:
@@ -62,14 +62,12 @@ initContainers:
 
 ```yaml
 - name: OTEL_SERVICE_NAME
-  value: order-service      # in order-service deployment
+  value: order-service
 - name: OTEL_SERVICE_NAME
-  value: inventory-service  # in inventory-service deployment
+  value: inventory-service
 ```
 
 If `OTEL_SERVICE_NAME` does not align with the service/deployment naming convention used by your topology tool, dependency edges can be missing even when spans exist.
-
-If these init/env settings are missing, zero-code tracing will not start.
 
 ## Deploy to kind
 
@@ -108,22 +106,6 @@ In another terminal:
 for i in {1..20}; do curl -s http://localhost:28080/order/1 > /dev/null; done
 ```
 
-## Verify
-
-Tempo API search:
-
-```bash
-kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search?tags=service.name=order-service&limit=5'
-```
-
-Useful follow-up queries:
-
-```bash
-kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search/tag/http.route/values'
-kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search/tag/messaging.system/values'
-kubectl -n monitoring get --raw '/api/v1/namespaces/monitoring/services/tempo:3200/proxy/api/search/tag/db.system/values'
-```
-
 ## What we observed with zero-code
 
 Deployed and verified on a local kind cluster:
@@ -131,24 +113,18 @@ Deployed and verified on a local kind cluster:
 - `GET /order/{id:int}` server spans: present
 - `order-service -> inventory-service` HTTP client spans: present
 - PostgreSQL spans: present with `db.system=postgresql`
+- Redis spans: present with `db.system=redis`
 - RabbitMQ spans: present with `messaging.system=rabbitmq`
 - ClickHouse traffic: present only as outbound HTTP spans to the ClickHouse service
 
 Important limitation:
 
 - Zero-code did not produce first-class ClickHouse DB spans in this sample.
-- In Tempo, `db.system` values included `postgresql`, but not `clickhouse`.
+- In Tempo, `db.system` values included `postgresql` and `redis`, but not `clickhouse`.
 - The ClickHouse calls were visible as `System.Net.Http` client spans because this driver talks over HTTP.
 
 Practical takeaway:
 
-- Zero-code is enough for HTTP, PostgreSQL, and RabbitMQ in this sample.
+- Zero-code is enough for HTTP, PostgreSQL, Redis, and raw RabbitMQ client spans in this sample.
 - Zero-code is not enough if you need ClickHouse to appear as a real database dependency with DB semantics.
 - For ClickHouse, use the code-based sample and add explicit spans around the ClickHouse calls.
-
-## Notes
-
-- Auto-instrumentation is configured in `k8s/otel-sample.yaml` with:
-  - initContainer runs official installer script (`otel-dotnet-auto-install.sh`) with `VERSION=v1.13.0`
-  - profiler env vars (`CORECLR_*`, `DOTNET_*`, `OTEL_*`)
-- If your runtime/architecture differs, adjust `CORECLR_PROFILER_PATH`.

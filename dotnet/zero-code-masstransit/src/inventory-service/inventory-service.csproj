@@ -7,8 +7,9 @@
 
   <ItemGroup>
     <PackageReference Include="ClickHouse.Driver" Version="1.0.0" />
+    <PackageReference Include="MassTransit" Version="8.3.5" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.3.5" />
     <PackageReference Include="Npgsql" Version="8.0.6" />
-    <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
     <PackageReference Include="StackExchange.Redis" Version="2.8.31" />
   </ItemGroup>
 </Project>

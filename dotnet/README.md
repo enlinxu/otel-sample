@@ -1,85 +1,79 @@
 # .NET OpenTelemetry samples
 
-This directory contains two implementations for the same demo app:
+This directory now contains three implementations of the demo app:
 
 - `code-based-instr`: OpenTelemetry SDK configured in app code.
-- `zero-code-inst`: no OTel SDK code; instrumentation injected at runtime using .NET auto-instrumentation.
+- `zero-code-inst`: zero-code auto-instrumentation with raw `RabbitMQ.Client`.
+- `zero-code-masstransit`: zero-code auto-instrumentation with `MassTransit` over `RabbitMQ`.
 
 ## Read first
 
 - [Code-based instrumentation](./code-based-instr/README.md)
 - [Zero-code auto-instrumentation](./zero-code-inst/README.md)
+- [Zero-code auto-instrumentation with MassTransit](./zero-code-masstransit/README.md)
+
+## Why there are two zero-code samples
+
+The two zero-code samples are intentionally different:
+
+- `zero-code-inst` shows the trace shape for direct `RabbitMQ.Client` usage.
+- `zero-code-masstransit` is meant to reproduce a customer environment that uses `MassTransit`, where messaging spans often look different.
+
+That matters because a parser that works for raw RabbitMQ spans may still fail on MassTransit consumer spans.
 
 ## Difference and tradeoffs
 
-| Dimension | Code-based instrumentation | Zero-code auto-instrumentation |
-|---|---|---|
-| App code changes | Required (`Program.cs` + packages) | Not required |
-| Time to first trace | Slower (code + build + release) | Faster (deployment/env changes) |
-| Control/precision | Highest | Medium |
-| Custom spans/attributes | Easy (full control in code) | Limited (mainly config-based) |
-| Stability over time | High, explicit in code | Can drift with runtime/agent/image versions |
-| Runtime/version constraints | Lower | Higher (profiler/startup hook compatibility) |
-| Operational complexity | Lower day-2 | Higher day-2 (injection/env/debugging) |
-| Best for | Long-term production standard | Fast bootstrap for legacy estates |
-
-## Practical implications
-
-### Code-based (`code-based-instr`)
-
-Pros:
-- Explicit and reviewable in app code.
-- Easier to tune span names/attributes and add business context.
-- Usually easier to debug because behavior is app-version pinned.
-
-Cons:
-- Requires engineering time and service release cycles.
-- Harder to roll out quickly across many existing services.
-
-### Zero-code (`zero-code-inst`)
-
-Pros:
-- Fastest path when teams cannot modify code.
-- Good for proving value and getting baseline service maps quickly.
-
-Cons:
-- More moving parts in Kubernetes manifests (init container, env vars, profiler paths).
-- Compatibility constraints can cause partial instrumentation.
-- Topology tools may need service-name alignment (for example `OTEL_SERVICE_NAME`) or edges can appear incomplete.
-
-## Recommended adoption pattern
-
-1. Start with `zero-code-inst` to get immediate baseline traces.
-2. Move critical services to `code-based-instr` for durable, high-fidelity observability.
-3. Keep zero-code for low-priority/legacy services until they are migrated.
+| Dimension | Code-based instrumentation | Zero-code (`RabbitMQ.Client`) | Zero-code (`MassTransit`) |
+|---|---|---|---|
+| App code changes | Required | Not required | Not required for OTel, but app uses MassTransit |
+| Time to first trace | Slower | Faster | Faster |
+| Messaging span shape | Full control | RabbitMQ-native | MassTransit-shaped |
+| Best use | Long-term production standard | Baseline zero-code reference | Customer reproduction for MassTransit stacks |
+| Auto version testing | N/A | `OTEL_AUTO_VERSION` in manifest | `OTEL_AUTO_VERSION` in manifest |
 
 ## In this repo
 
-- `code-based-instr` and `zero-code-inst` implement the same functional app path:
-  `order-service` -> `inventory-service` -> `postgres` + `clickhouse` + `rabbitmq`
-- The business request path is:
-  - inbound HTTP to `order-service`
-  - outbound HTTP from `order-service` to `inventory-service`
-  - PostgreSQL read in `inventory-service`
-  - ClickHouse write + query in `inventory-service`
-  - RabbitMQ publish + consume in `inventory-service`
+All variants implement the same business flow:
 
-## Observed zero-code gap
+- inbound HTTP to `order-service`
+- outbound HTTP from `order-service` to `inventory-service`
+- PostgreSQL read in `inventory-service`
+- ClickHouse write + query in `inventory-service`
+- Redis write + read in `inventory-service`
+- RabbitMQ-based messaging in `inventory-service`
 
-After deploying the zero-code sample on kind and querying Tempo raw traces:
+The important difference is the messaging client stack:
 
-- HTTP server/client spans: present
-- PostgreSQL spans: present as database spans (`db.system=postgresql`)
-- RabbitMQ spans: present as messaging spans (`messaging.system=rabbitmq`)
-- ClickHouse traffic: present only as generic HTTP client spans to the ClickHouse service
+- `zero-code-inst`: direct `RabbitMQ.Client`
+- `zero-code-masstransit`: `MassTransit`
 
-What is missing in zero-code:
+## What we know so far
 
-- No first-class ClickHouse database spans
-- No `db.system=clickhouse` in Tempo
+- `zero-code-inst` emits RabbitMQ-native spans with `messaging.system=rabbitmq`.
+- Customer traces show MassTransit-specific attributes such as `messaging.masstransit.*`.
+- `zero-code-masstransit` exists to answer a narrower question:
+  does changing only the auto-instrumentation version change the MassTransit consumer span shape enough to help your parser?
 
-Why this matters:
+## Version testing
 
-- From an RCA perspective, RabbitMQ is usable with zero-code in this sample.
-- ClickHouse is only partially visible with zero-code because it looks like outbound HTTP, not database traffic.
-- If you want ClickHouse to appear as a database dependency with DB-specific semantics, use `code-based-instr` and add explicit spans around the ClickHouse calls.
+Both zero-code manifests support a swappable auto-instrumentation version via:
+
+```yaml
+- name: OTEL_AUTO_VERSION
+  value: v1.13.0
+```
+
+or in the MassTransit sample:
+
+```yaml
+- name: OTEL_AUTO_VERSION
+  value: v1.9.0
+```
+
+That lets you compare:
+
+1. raw `RabbitMQ.Client` on `v1.13.0`
+2. `MassTransit` on `v1.9.0`
+3. `MassTransit` on `v1.13.0`
+
+without changing the overall deployment model.

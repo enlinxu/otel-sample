@@ -1,10 +1,8 @@
-using System.Text;
-using System.Text.Json;
 using ClickHouse.Driver.ADO;
+using InventoryEventMessage = OTelSample.ZeroCodeMassTransit.Messages.InventoryEvent;
+using MassTransit;
 using Microsoft.Extensions.Options;
 using Npgsql;
-using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -21,19 +19,32 @@ builder.Services.AddSingleton(new ClickHouseOptions(clickHouseConnectionString))
 builder.Services.AddSingleton<ClickHouseInitializationState>();
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConnectionString));
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
-builder.Services.AddSingleton(static serviceProvider =>
+builder.Services.AddOptions<MassTransitHostOptions>().Configure(options =>
 {
-    var options = serviceProvider.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
-
-    return new ConnectionFactory
-    {
-        HostName = options.Host,
-        Port = options.Port,
-        UserName = options.Username,
-        Password = options.Password
-    };
+    options.WaitUntilStarted = true;
+    options.StartTimeout = TimeSpan.FromSeconds(30);
 });
-builder.Services.AddHostedService<InventoryEventConsumer>();
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<InventoryEventConsumer>();
+    x.SetKebabCaseEndpointNameFormatter();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        var options = context.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
+
+        cfg.Host(options.Host, options.Port, "/", h =>
+        {
+            h.Username(options.Username);
+            h.Password(options.Password);
+        });
+
+        cfg.ReceiveEndpoint(options.Queue, endpoint =>
+        {
+            endpoint.ConfigureConsumer<InventoryEventConsumer>(context);
+        });
+    });
+});
 
 var app = builder.Build();
 
@@ -53,8 +64,7 @@ app.MapGet("/inventory/{id:int}", async (
     ClickHouseOptions clickHouseOptions,
     ClickHouseInitializationState clickHouseInitializationState,
     IConnectionMultiplexer redis,
-    ConnectionFactory rabbitMqFactory,
-    IOptions<RabbitMqOptions> rabbitMqOptions,
+    IPublishEndpoint publishEndpoint,
     CancellationToken cancellationToken) =>
 {
     await EnsureClickHouseInitialized(
@@ -65,7 +75,7 @@ app.MapGet("/inventory/{id:int}", async (
     var available = await GetInventoryLevel(dataSource, id, cancellationToken);
     var clickHouseCount = await RecordAndCountClickHouse(clickHouseOptions.ConnectionString, id, available, cancellationToken);
     var redisValue = await RecordAndReadRedis(redis, id, available);
-    await PublishInventoryEvent(rabbitMqFactory, rabbitMqOptions.Value, id, available, cancellationToken);
+    await PublishInventoryEvent(publishEndpoint, id, available, cancellationToken);
 
     return Results.Ok(new
     {
@@ -228,93 +238,27 @@ static async Task<string> RecordAndReadRedis(IConnectionMultiplexer redis, int i
     return result.ToString();
 }
 
-static async Task PublishInventoryEvent(
-    ConnectionFactory rabbitMqFactory,
-    RabbitMqOptions rabbitMqOptions,
+static Task PublishInventoryEvent(
+    IPublishEndpoint publishEndpoint,
     int id,
     int available,
     CancellationToken cancellationToken)
 {
-    await using var connection = await rabbitMqFactory.CreateConnectionAsync(cancellationToken);
-    await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
-
-    await channel.QueueDeclareAsync(
-        queue: rabbitMqOptions.Queue,
-        durable: true,
-        exclusive: false,
-        autoDelete: false,
-        arguments: null,
-        cancellationToken: cancellationToken);
-
-    var payload = JsonSerializer.SerializeToUtf8Bytes(new InventoryEvent(id, available, DateTimeOffset.UtcNow));
-    var properties = new BasicProperties
-    {
-        ContentType = "application/json"
-    };
-
-    await channel.BasicPublishAsync(
-        exchange: string.Empty,
-        routingKey: rabbitMqOptions.Queue,
-        mandatory: false,
-        basicProperties: properties,
-        body: payload,
-        cancellationToken: cancellationToken);
+    return publishEndpoint.Publish(new InventoryEventMessage(id, available, DateTimeOffset.UtcNow), cancellationToken);
 }
 
-internal sealed class InventoryEventConsumer(
-    ConnectionFactory rabbitMqFactory,
-    IOptions<RabbitMqOptions> rabbitMqOptions,
-    ILogger<InventoryEventConsumer> logger) : BackgroundService
+internal sealed class InventoryEventConsumer(ILogger<InventoryEventConsumer> logger) : IConsumer<InventoryEventMessage>
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public Task Consume(ConsumeContext<InventoryEventMessage> context)
     {
-        var options = rabbitMqOptions.Value;
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await using var connection = await rabbitMqFactory.CreateConnectionAsync(stoppingToken);
-                await using var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
-
-                await channel.QueueDeclareAsync(
-                    queue: options.Queue,
-                    durable: true,
-                    exclusive: false,
-                    autoDelete: false,
-                    arguments: null,
-                    cancellationToken: stoppingToken);
-
-                var consumer = new AsyncEventingBasicConsumer(channel);
-                consumer.ReceivedAsync += async (_, delivery) =>
-                {
-                    logger.LogInformation(
-                        "Consumed inventory event payload: {Payload}",
-                        Encoding.UTF8.GetString(delivery.Body.ToArray()));
-                    await Task.CompletedTask;
-                };
-
-                await channel.BasicConsumeAsync(
-                    queue: options.Queue,
-                    autoAck: true,
-                    consumer: consumer,
-                    cancellationToken: stoppingToken);
-
-                await Task.Delay(Timeout.Infinite, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "RabbitMQ consumer setup failed; retrying in 2s");
-                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
-            }
-        }
+        logger.LogInformation(
+            "Consumed inventory event payload: {ItemId}/{Available} messageId={MessageId}",
+            context.Message.ItemId,
+            context.Message.Available,
+            context.MessageId);
+        return Task.CompletedTask;
     }
 }
-
-internal sealed record InventoryEvent(int ItemId, int Available, DateTimeOffset ObservedAt);
 
 internal sealed class ClickHouseOptions(string connectionString)
 {
@@ -330,8 +274,13 @@ internal sealed class ClickHouseInitializationState
 internal sealed class RabbitMqOptions
 {
     public string Host { get; init; } = "rabbitmq";
-    public int Port { get; init; } = 5672;
+    public ushort Port { get; init; } = 5672;
     public string Username { get; init; } = "guest";
     public string Password { get; init; } = "guest";
-    public string Queue { get; init; } = "inventory-events";
+    public string Queue { get; init; } = "sit.user-activity";
+}
+
+namespace OTelSample.ZeroCodeMassTransit.Messages
+{
+    public sealed record InventoryEvent(int ItemId, int Available, DateTimeOffset ObservedAt);
 }
