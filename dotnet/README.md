@@ -1,6 +1,6 @@
 # .NET OpenTelemetry samples
 
-This directory now contains three implementations of the demo app:
+This directory contains three implementations of the demo app:
 
 - `code-based-instr`: OpenTelemetry SDK configured in app code.
 - `zero-code-inst`: zero-code auto-instrumentation with raw `RabbitMQ.Client`.
@@ -77,3 +77,33 @@ That lets you compare:
 3. `MassTransit` on `v1.13.0`
 
 without changing the overall deployment model.
+
+## Prompt For Agent
+
+Use this prompt with a coding agent when you want it to instrument a real .NET codebase by following this repo:
+
+```text
+Read the README and code under dotnet/ in this repo before making changes.
+
+Goal:
+Instrument my .NET application with OpenTelemetry so it produces production-usable traces for:
+- inbound server traffic
+- outbound client traffic
+- database traffic
+- cache traffic if applicable
+- messaging traffic if applicable
+- trace propagation across service boundaries
+
+Instructions:
+- First decide whether my app should follow the code-based sample, the zero-code sample, or the MassTransit zero-code sample.
+- Reuse the same OpenTelemetry patterns, package choices, environment variables, and service naming conventions used in this repo.
+- Follow OpenTelemetry semantic conventions instead of inventing custom attribute names for standard dependencies.
+- If my app uses direct RabbitMQ.Client, follow dotnet/zero-code-inst or dotnet/code-based-instr as appropriate.
+- If my app uses MassTransit, follow dotnet/zero-code-masstransit for messaging expectations.
+- Preserve my existing business logic; only add the minimum instrumentation and configuration needed.
+- Show me exactly which files you changed and why.
+- If zero-code will not capture an important dependency correctly, say so explicitly and switch to code-based instrumentation for that dependency.
+
+Expected outcome:
+My app should emit traces that look structurally similar to the samples in this repo and are suitable for dependency-aware RCA.
+```

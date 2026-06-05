@@ -50,6 +50,31 @@ Environment variables for the agent:
   value: "true"
 ```
 
+## Prompt For Agent
+
+```text
+Read java/auto-instr in this repo and use it as the reference implementation for zero-code tracing in my Java application.
+
+What to copy from the example:
+- JAVA_TOOL_OPTIONS javaagent injection
+- OTEL_SERVICE_NAME and OTLP exporter environment variables
+- deployment-level configuration rather than application code changes
+- propagation expectations across HAProxy or similar load balancers
+
+What to do in my codebase/deployment:
+- Add the Java agent and runtime env vars to my deployment manifests or startup scripts
+- Keep application code unchanged unless there is a proven gap
+- Verify inbound HTTP, outbound HTTP, database, and RabbitMQ spans if my app uses those components
+- Preserve trace headers across proxies and load balancers
+- Explain any dependency gaps that the agent may not cover well enough
+
+Deliverables:
+- deployment/startup changes
+- exact env vars and javaagent flag added
+- expected trace types
+- any known propagation or dependency caveats
+```
+
 ## Deploy to Kind
 
 1. Build and load images:

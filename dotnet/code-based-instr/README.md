@@ -54,6 +54,33 @@ That enables the explicit spans created around:
 
 Without that `ActivitySource`, PostgreSQL still works through `Npgsql`, but ClickHouse and RabbitMQ would not have the same explicit span shape this sample demonstrates.
 
+## Prompt For Agent
+
+```text
+Read dotnet/code-based-instr in this repo and use it as the reference implementation for instrumenting my .NET application in code.
+
+What to copy from the example:
+- OpenTelemetry SDK setup in Program.cs
+- AspNetCore server instrumentation
+- HttpClient client instrumentation
+- OTLP exporter wiring
+- ActivitySource-based custom spans for dependencies that are not captured well enough automatically
+- service.name and collector endpoint conventions used in this repo
+
+What to do in my codebase:
+- Add the minimum package references and Program.cs startup configuration needed
+- Instrument inbound HTTP, outbound HTTP, database calls, and messaging calls if my app has them
+- Reuse standard OpenTelemetry semantic conventions for dependency spans
+- Preserve my current business logic and only add instrumentation/config changes
+- If a dependency is not automatically captured with the quality shown in this sample, add explicit spans the way this example does for ClickHouse and RabbitMQ
+
+Deliverables:
+- code changes
+- config/env changes
+- short explanation of which trace types are now covered
+- any remaining gaps compared with this sample
+```
+
 ## Deploy to kind
 
 1. Build and load images:

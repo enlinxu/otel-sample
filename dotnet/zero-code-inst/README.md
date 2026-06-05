@@ -69,6 +69,37 @@ initContainers:
 
 If `OTEL_SERVICE_NAME` does not align with the service/deployment naming convention used by your topology tool, dependency edges can be missing even when spans exist.
 
+## Prompt For Agent
+
+```text
+Read dotnet/zero-code-inst in this repo and use it as the reference implementation for zero-code .NET tracing.
+
+Goal:
+Enable tracing in my .NET application without changing application code if possible.
+
+What to copy from the example:
+- Kubernetes/runtime injection pattern for .NET auto-instrumentation
+- init container flow
+- CORECLR and DOTNET startup hook environment variables
+- OTEL exporter environment variables
+- OTEL_SERVICE_NAME alignment rules
+
+What to do in my codebase/deployment:
+- Update only deployment/runtime manifests first
+- Keep application code unchanged unless the repo example shows that zero-code is insufficient for a dependency I care about
+- Make sure service naming and collector endpoint settings match my environment
+- Tell me which trace types should appear automatically and which ones may still need code-based instrumentation
+
+Decision rule:
+- If my app depends on a library that zero-code does not capture with good semantics, say that clearly and recommend the code-based sample for that dependency.
+
+Deliverables:
+- deployment/manifests changes
+- exact env vars added
+- short list of expected spans
+- explicit list of known zero-code gaps compared with this sample
+```
+
 ## Deploy to kind
 
 1. Build and load images:

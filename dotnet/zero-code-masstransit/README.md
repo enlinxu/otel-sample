@@ -46,6 +46,38 @@ To test whether upgrading changes the trace shape, change it to:
   value: v1.13.0
 ```
 
+## Prompt For Agent
+
+```text
+Read dotnet/zero-code-masstransit in this repo and use it as the reference implementation when my .NET application uses MassTransit over RabbitMQ.
+
+Goal:
+Enable zero-code tracing in my deployment and set correct expectations for MassTransit messaging spans.
+
+What to copy from the example:
+- runtime injection pattern for .NET auto-instrumentation
+- OTEL_AUTO_VERSION version pinning and swap testing
+- service naming and exporter env vars
+- the expectation that MassTransit consumer spans may differ from raw RabbitMQ spans
+
+What to do in my codebase/deployment:
+- Keep app code unchanged unless there is a hard gap
+- Adjust deployment/runtime settings to match the zero-code pattern in this repo
+- Verify whether my traces contain MassTransit-specific attributes such as messaging.masstransit.*
+- Do not assume consumer spans will look like raw RabbitMQ.Client spans
+
+If my downstream tooling expects RabbitMQ-native consumer span shape:
+- call that out explicitly
+- compare the traces against this sample
+- recommend parser normalization or code-based instrumentation only if needed
+
+Deliverables:
+- deployment/runtime changes
+- version recommendation for OTEL_AUTO_VERSION
+- short explanation of expected MassTransit span shape
+- any incompatibilities with tooling that assumes raw RabbitMQ spans
+```
+
 ## Deploy to kind
 
 ```bash

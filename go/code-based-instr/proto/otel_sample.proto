@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package otelsample.v1;
+
+option go_package = "github.com/enlinxu/otel-sample/go/code-based-instr/proto;otelsamplev1";
+
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}
+
+service InventoryService {
+  rpc GetInventory(GetInventoryRequest) returns (GetInventoryResponse);
+}
+
+message GetOrderRequest {
+  int32 item_id = 1;
+}
+
+message GetOrderResponse {
+  int32 order_id = 1;
+  string status = 2;
+  GetInventoryResponse inventory = 3;
+}
+
+message GetInventoryRequest {
+  int32 item_id = 1;
+}
+
+message GetInventoryResponse {
+  int32 item_id = 1;
+  int32 available = 2;
+  string postgres_source = 3;
+  int32 clickhouse_request_count = 4;
+  string redis_cache_value = 5;
+  string rabbitmq_delivery_message = 6;
+}

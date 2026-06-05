@@ -219,11 +219,11 @@ static async Task<int> RecordAndCountClickHouse(string connectionString, int id,
 static async Task<string> RecordAndReadRedis(IConnectionMultiplexer redis, int id, int available)
 {
     var db = redis.GetDatabase();
-    var key = $"inventory:item:{id}";
+    var key = $"inventory-events:{id}";
     var value = available.ToString();
 
-    await db.StringSetAsync(key, value);
-    var result = await db.StringGetAsync(key);
+    await db.ListLeftPushAsync(key, value);
+    var result = await db.ListRightPopAsync(key);
 
     return result.ToString();
 }
