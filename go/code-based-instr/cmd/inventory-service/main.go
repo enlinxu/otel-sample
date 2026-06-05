@@ -1,25 +1,26 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/enlinxu/otel-sample/go/code-based-instr/internal/telemetry"
 	otelsamplev1 "github.com/enlinxu/otel-sample/go/code-based-instr/proto"
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
+	"go.nhat.io/otelsql"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -32,15 +33,12 @@ import (
 
 type app struct {
 	otelsamplev1.UnimplementedInventoryServiceServer
-	tracer             trace.Tracer
-	postgres           *pgxpool.Pool
-	redis              *redis.Client
-	rabbitChannel      *amqp.Channel
-	rabbitQueueName    string
-	clickHouseURL      string
-	clickHouseUsername string
-	clickHousePassword string
-	clickHouseClient   *http.Client
+	tracer          trace.Tracer
+	postgres        *pgxpool.Pool
+	redis           *redis.Client
+	rabbitChannel   *amqp.Channel
+	rabbitQueueName string
+	clickhouse      *sql.DB
 }
 
 type inventoryEvent struct {
@@ -59,20 +57,49 @@ func main() {
 
 	postgresDSN := getenv("POSTGRES_DSN", "postgres://otel:otel@postgres.otel-sample-go.svc.cluster.local:5432/otel")
 	redisAddr := getenv("REDIS_ADDR", "redis.otel-sample-go.svc.cluster.local:6379")
-	clickHouseURL := getenv("CLICKHOUSE_URL", "http://clickhouse.otel-sample-go.svc.cluster.local:8123")
+	clickHouseAddr := getenv("CLICKHOUSE_ADDR", "clickhouse.otel-sample-go.svc.cluster.local:9000")
 	clickHouseUser := getenv("CLICKHOUSE_USER", "otel")
 	clickHousePassword := getenv("CLICKHOUSE_PASSWORD", "otel")
 	rabbitMQURL := getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq.otel-sample-go.svc.cluster.local:5672/")
 	rabbitMQQueue := getenv("RABBITMQ_QUEUE", "inventory-events")
 
-	postgresPool, err := pgxpool.New(ctx, postgresDSN)
+	postgresConfig, err := pgxpool.ParseConfig(postgresDSN)
+	if err != nil {
+		log.Fatalf("parse postgres config: %v", err)
+	}
+	postgresConfig.ConnConfig.Tracer = otelpgx.NewTracer()
+	postgresPool, err := pgxpool.NewWithConfig(ctx, postgresConfig)
 	if err != nil {
 		log.Fatalf("postgres pool: %v", err)
 	}
 	defer postgresPool.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	if err := redisotel.InstrumentTracing(redisClient); err != nil {
+		log.Fatalf("instrument redis tracing: %v", err)
+	}
 	defer redisClient.Close()
+
+	chDriverName, err := otelsql.Register("clickhouse",
+		otelsql.AllowRoot(),
+		otelsql.TraceQueryWithoutArgs(),
+		otelsql.TraceRowsClose(),
+		otelsql.TraceRowsAffected(),
+		otelsql.WithDatabaseName("default"),
+		otelsql.WithSystem(attribute.String("db.system", "clickhouse")),
+		otelsql.WithDefaultAttributes(
+			attribute.String("server.address", strings.SplitN(clickHouseAddr, ":", 2)[0]),
+		),
+	)
+	if err != nil {
+		log.Fatalf("register clickhouse otelsql driver: %v", err)
+	}
+	clickhouseDSN := fmt.Sprintf("clickhouse://%s:%s@%s/default", clickHouseUser, clickHousePassword, clickHouseAddr)
+	clickhouseDB, err := sql.Open(chDriverName, clickhouseDSN)
+	if err != nil {
+		log.Fatalf("open clickhouse: %v", err)
+	}
+	defer clickhouseDB.Close()
 
 	rabbitConn, err := dialRabbitMQ(ctx, rabbitMQURL)
 	if err != nil {
@@ -91,15 +118,12 @@ func main() {
 	}
 
 	service := &app{
-		tracer:             otel.Tracer("github.com/enlinxu/otel-sample/go/code-based-instr/inventory-service"),
-		postgres:           postgresPool,
-		redis:              redisClient,
-		rabbitChannel:      rabbitChannel,
-		rabbitQueueName:    rabbitMQQueue,
-		clickHouseURL:      clickHouseURL,
-		clickHouseUsername: clickHouseUser,
-		clickHousePassword: clickHousePassword,
-		clickHouseClient:   &http.Client{Timeout: 10 * time.Second},
+		tracer:          otel.Tracer("github.com/enlinxu/otel-sample/go/code-based-instr/inventory-service"),
+		postgres:        postgresPool,
+		redis:           redisClient,
+		rabbitChannel:   rabbitChannel,
+		rabbitQueueName: rabbitMQQueue,
+		clickhouse:      clickhouseDB,
 	}
 
 	if err := service.initDependencies(ctx); err != nil {
@@ -182,7 +206,8 @@ func (a *app) initDependencies(ctx context.Context) error {
 	}
 
 	if err := retry(ctx, 30, 2*time.Second, func(ctx context.Context) error {
-		return a.execClickHouse(ctx, "CREATE TABLE IF NOT EXISTS inventory_requests (item_id Int32, available Int32, observed_at DateTime) ENGINE = MergeTree ORDER BY (item_id, observed_at)")
+		_, err := a.clickhouse.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS inventory_requests (item_id Int32, available Int32, observed_at DateTime) ENGINE = MergeTree ORDER BY (item_id, observed_at)`)
+		return err
 	}); err != nil {
 		return fmt.Errorf("init clickhouse: %w", err)
 	}
@@ -196,106 +221,45 @@ func (a *app) initDependencies(ctx context.Context) error {
 	return nil
 }
 
+// otelpgx automatically creates spans for all pgx queries.
 func (a *app) queryInventory(ctx context.Context, itemID int) (int, error) {
-	ctx, span := a.tracer.Start(ctx, "db.postgresql.query inventory", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
-		attribute.String("db.system", "postgresql"),
-		attribute.String("db.name", "otel"),
-		attribute.String("db.operation.name", "SELECT"),
-		attribute.String("db.collection.name", "inventory"),
-		attribute.String("db.query.text", "SELECT available FROM inventory WHERE item_id = $1"),
-	))
-	defer span.End()
-
 	var available int
 	if err := a.postgres.QueryRow(ctx, "SELECT available FROM inventory WHERE item_id = $1", itemID).Scan(&available); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
 	return available, nil
 }
 
+// otelsql automatically creates spans for all database/sql calls.
 func (a *app) writeClickHouse(ctx context.Context, itemID, available int) error {
-	ctx, span := a.tracer.Start(ctx, "db.clickhouse.insert inventory_requests", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
-		attribute.String("db.system", "clickhouse"),
-		attribute.String("db.name", "default"),
-		attribute.String("db.operation.name", "INSERT"),
-		attribute.String("db.collection.name", "inventory_requests"),
-	))
-	defer span.End()
-
-	statement := fmt.Sprintf("INSERT INTO inventory_requests (item_id, available, observed_at) VALUES (%d, %d, now())", itemID, available)
-	span.SetAttributes(attribute.String("db.query.text", statement))
-	if err := a.execClickHouse(ctx, statement); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-	return nil
+	_, err := a.clickhouse.ExecContext(ctx,
+		"INSERT INTO inventory_requests (item_id, available, observed_at) VALUES (?, ?, now())",
+		itemID, available,
+	)
+	return err
 }
 
+// otelsql automatically creates spans for all database/sql calls.
 func (a *app) countClickHouse(ctx context.Context, itemID int) (int, error) {
-	ctx, span := a.tracer.Start(ctx, "db.clickhouse.select inventory_requests_count", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
-		attribute.String("db.system", "clickhouse"),
-		attribute.String("db.name", "default"),
-		attribute.String("db.operation.name", "SELECT"),
-		attribute.String("db.collection.name", "inventory_requests"),
-	))
-	defer span.End()
-
-	statement := fmt.Sprintf("SELECT count() FROM inventory_requests WHERE item_id = %d FORMAT TabSeparated", itemID)
-	span.SetAttributes(attribute.String("db.query.text", statement))
-	result, err := a.queryClickHouse(ctx, statement)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, err
-	}
-
-	count, err := strconv.Atoi(strings.TrimSpace(result))
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, err
-	}
-	return count, nil
+	var count int
+	err := a.clickhouse.QueryRowContext(ctx,
+		"SELECT count() FROM inventory_requests WHERE item_id = ?",
+		itemID,
+	).Scan(&count)
+	return count, err
 }
 
+// redisotel automatically creates spans for all go-redis commands.
 func (a *app) cacheInventory(ctx context.Context, itemID, available int) (string, error) {
 	cacheKey := fmt.Sprintf("inventory-events:%d", itemID)
 	cacheValue := strconv.Itoa(available)
-
-	setCtx, setSpan := a.tracer.Start(ctx, "db.redis.lpush inventory", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
-		attribute.String("db.system", "redis"),
-		attribute.String("db.operation.name", "LPUSH"),
-		attribute.Int("db.redis.database_index", 0),
-		attribute.String("db.query.text", fmt.Sprintf("LPUSH %s %s", cacheKey, cacheValue)),
-	))
-	if err := a.redis.LPush(setCtx, cacheKey, cacheValue).Err(); err != nil {
-		setSpan.RecordError(err)
-		setSpan.SetStatus(codes.Error, err.Error())
-		setSpan.End()
+	if err := a.redis.LPush(ctx, cacheKey, cacheValue).Err(); err != nil {
 		return "", err
 	}
-	setSpan.End()
-
-	getCtx, getSpan := a.tracer.Start(ctx, "db.redis.rpop inventory", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
-		attribute.String("db.system", "redis"),
-		attribute.String("db.operation.name", "RPOP"),
-		attribute.Int("db.redis.database_index", 0),
-		attribute.String("db.query.text", fmt.Sprintf("RPOP %s", cacheKey)),
-	))
-	defer getSpan.End()
-
-	value, err := a.redis.RPop(getCtx, cacheKey).Result()
-	if err != nil {
-		getSpan.RecordError(err)
-		getSpan.SetStatus(codes.Error, err.Error())
-		return "", err
-	}
-	return value, nil
+	return a.redis.RPop(ctx, cacheKey).Result()
 }
 
+// No native OTel library exists for amqp091-go; spans are created manually.
 func (a *app) publishAndConsume(ctx context.Context, event inventoryEvent) (string, error) {
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -347,52 +311,6 @@ func (a *app) publishAndConsume(ctx context.Context, event inventoryEvent) (stri
 	consumeSpan.End()
 
 	return string(delivery.Body), nil
-}
-
-func (a *app) execClickHouse(ctx context.Context, statement string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.clickHouseURL, strings.NewReader(statement))
-	if err != nil {
-		return err
-	}
-	if a.clickHouseUsername != "" {
-		req.SetBasicAuth(a.clickHouseUsername, a.clickHousePassword)
-	}
-	resp, err := a.clickHouseClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("clickhouse status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return nil
-}
-
-func (a *app) queryClickHouse(ctx context.Context, statement string) (string, error) {
-	requestURL := a.clickHouseURL + "?query=" + url.QueryEscape(statement)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewBuffer(nil))
-	if err != nil {
-		return "", err
-	}
-	if a.clickHouseUsername != "" {
-		req.SetBasicAuth(a.clickHouseUsername, a.clickHousePassword)
-	}
-	resp, err := a.clickHouseClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("clickhouse status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
 }
 
 func dialRabbitMQ(ctx context.Context, rabbitMQURL string) (*amqp.Connection, error) {

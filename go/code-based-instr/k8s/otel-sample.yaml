@@ -208,8 +208,8 @@ spec:
           value: postgres://otel:otel@postgres.otel-sample-go.svc.cluster.local:5432/otel
         - name: REDIS_ADDR
           value: redis.otel-sample-go.svc.cluster.local:6379
-        - name: CLICKHOUSE_URL
-          value: http://clickhouse.otel-sample-go.svc.cluster.local:8123
+        - name: CLICKHOUSE_ADDR
+          value: clickhouse.otel-sample-go.svc.cluster.local:9000
         - name: CLICKHOUSE_USER
           value: otel
         - name: CLICKHOUSE_PASSWORD

@@ -33,17 +33,40 @@ grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
 grpc.NewClient(addr, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 ```
 
-For the manual spans around PostgreSQL, ClickHouse, Redis, and RabbitMQ, this is the critical pattern:
+For PostgreSQL, `otelpgx` is attached to the pgxpool config — no manual spans needed:
+
+```go
+config.ConnConfig.Tracer = otelpgx.NewTracer()
+pool, _ := pgxpool.NewWithConfig(ctx, config)
+```
+
+For Redis, `redisotel` adds an instrumentation hook to the client — no manual spans needed:
+
+```go
+redisotel.InstrumentTracing(redisClient)
+```
+
+For ClickHouse, `otelsql` wraps the `clickhouse-go/v2` driver — no manual spans needed:
+
+```go
+driverName, _ := otelsql.Register("clickhouse",
+    otelsql.AllowRoot(),
+    otelsql.TraceQueryWithoutArgs(),
+    otelsql.WithDatabaseName("default"),
+    otelsql.WithSystem(attribute.String("db.system", "clickhouse")),
+)
+db, _ := sql.Open(driverName, "clickhouse://user:pass@host:9000/default")
+```
+
+For RabbitMQ, there is no native OTel library for `amqp091-go`, so spans are created manually:
 
 ```go
 ctx, span := tracer.Start(ctx, "messaging.rabbitmq.publish inventory-events",
     trace.WithSpanKind(trace.SpanKindProducer),
-    trace.WithAttributes(...semantic convention attributes...),
+    trace.WithAttributes(...),
 )
 defer span.End()
 ```
-
-If those hooks and `tracer.Start(...)` calls are missing, you will not get the app-level traces this sample is meant to demonstrate.
 
 ## Prompt For Agent
 
@@ -53,24 +76,39 @@ Read go/code-based-instr in this repo and use it as the reference implementation
 Goal:
 Add OpenTelemetry traces for RPC traffic, database traffic, cache traffic, and messaging traffic in my Go codebase.
 
-What to copy from the example:
-- OpenTelemetry tracer provider setup
-- gRPC server and client instrumentation using otelgrpc
-- explicit dependency spans for PostgreSQL, ClickHouse, Redis, and RabbitMQ
+How this sample instruments each dependency:
+- PostgreSQL: otelpgx tracer attached to pgxpool — spans are automatic, no manual tracer.Start() needed
+- Redis: redisotel hook on the go-redis client — spans are automatic, no manual tracer.Start() needed
+- ClickHouse: otelsql wrapping the clickhouse-go/v2 database/sql driver — spans are automatic
+- RabbitMQ: manual tracer.Start() spans — no native OTel library exists for amqp091-go
+
+IMPORTANT — match the library in use, not the library in the sample:
+The sample uses pgx, go-redis, and clickhouse-go/v2. Your codebase may use different libraries
+(e.g. gorm, sqlx, database/sql with a different driver, pgconn, another redis client). Do not
+replace the existing database or cache library. Instead:
+1. Inspect the codebase to identify which library is actually used for each dependency.
+2. Find the OTel instrumentation package that wraps that specific library
+   (examples: otelsql for any database/sql driver, otelgorm for gorm, uptrace/bun instrumentation for bun).
+3. Wire in that instrumentation package using the same pattern this sample uses for its libraries.
+4. Fall back to manual tracer.Start() spans only if no native OTel library exists for the library in use.
+
+What to copy from the example regardless of library choice:
+- OpenTelemetry tracer provider setup (internal/telemetry/telemetry.go)
+- RPC server and client instrumentation pattern using a stats handler or interceptor
 - OTLP exporter wiring and service naming
-- use of standard OpenTelemetry semantic convention attributes for RPC, DB, and messaging spans
+- Standard OpenTelemetry semantic convention attributes for any manual spans (db.system, messaging.system, etc.)
 
 What to do in my codebase:
 - Identify my RPC boundary and instrument it the way this sample instruments gRPC
-- Add explicit spans around dependencies that need code-level instrumentation
-- Preserve my business logic and only add the minimum tracing/config changes needed
-- Reuse semantic conventions from this sample rather than inventing custom keys for standard dependencies
-- Explain any gaps where my stack differs from this sample
+- For each dependency, find and wire the native OTel library for the library already in use
+- Add manual tracer.Start() spans only where no native library is available
+- Preserve business logic and only add the minimum tracing/config changes needed
+- Explain any gaps where your stack has no native OTel library
 
 Deliverables:
 - code changes
 - config/env changes
-- short mapping from my dependencies to the corresponding example files in this repo
+- short mapping: my dependency → library in use → OTel instrumentation package chosen
 - expected trace categories after the change
 ```
 
